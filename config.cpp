@@ -123,7 +123,9 @@ void Config::load_config(const std::string& path)
 {
 	RbsLib::Storage::FileIO::File file(path);
 	auto buffer = file.Read(RbsLib::Storage::StorageFile(path).GetFileSize());
-	ConfigJson.Parse(buffer.ToString());
+	if (!ConfigJson.Parse(buffer.ToString())) {
+		throw ConfigException("Config file parse failed: " + ConfigJson.GetErrMsg());
+	}
 	//检查并升级配置文件
 	try
 	{
