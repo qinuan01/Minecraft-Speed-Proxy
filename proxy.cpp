@@ -145,7 +145,7 @@ void Proxy::DisableUpstreamSocks5()
 
 asio::awaitable<void> Proxy::ConnectViaSocks5(asio::ip::tcp::socket& remote_server,
 	const std::string& target_host,
-	std::uint16_t target_port)
+	std::uint16_t target_port) const
 {
 	if (this->upstream_socks5_host.empty() || this->upstream_socks5_port == 0)
 	{
@@ -285,17 +285,13 @@ asio::awaitable<void> Proxy::ConnectViaSocks5(asio::ip::tcp::socket& remote_serv
 asio::awaitable<void> Proxy::ConnectRemoteServer(asio::ip::tcp::socket& remote_server,
 	const std::string& target_host,
 	std::uint16_t target_port,
-	bool log_success)
+	bool log_success) const
 {
+	(void)log_success;
+
 	if (this->upstream_socks5_enable)
 	{
 		co_await this->ConnectViaSocks5(remote_server, target_host, target_port);
-		if (log_success)
-		{
-			this->log_output(("Connected to remote server " + target_host + ":" +
-				std::to_string(target_port) + " via SOCKS5 " +
-				this->upstream_socks5_host + ":" + std::to_string(this->upstream_socks5_port)).c_str());
-		}
 		co_return;
 	}
 
@@ -306,10 +302,6 @@ asio::awaitable<void> Proxy::ConnectRemoteServer(asio::ip::tcp::socket& remote_s
 		asio::use_awaitable
 	);
 	co_await asio::async_connect(remote_server, endpoints, asio::use_awaitable);
-	if (log_success)
-	{
-		this->log_output(("Connected to remote server " + target_host + ":" + std::to_string(target_port)).c_str());
-	}
 }
 
 static std::string convertDomainPattern(const std::string& pattern) {

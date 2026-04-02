@@ -355,10 +355,10 @@ protected:
 	asio::awaitable<void> ConnectRemoteServer(asio::ip::tcp::socket& remote_server,
 		const std::string& target_host,
 		std::uint16_t target_port,
-		bool log_success = true);
+		bool log_success = true) const;
 	asio::awaitable<void> ConnectViaSocks5(asio::ip::tcp::socket& remote_server,
 		const std::string& target_host,
-		std::uint16_t target_port);
+		std::uint16_t target_port) const;
 
 	std::string local_address; ///< 本地监听地址
 	std::string remote_server_addr; ///< 远程服务器地址
