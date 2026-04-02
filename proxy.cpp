@@ -3,6 +3,8 @@
 #include <chrono>
 #include <iostream>
 #include <mutex>
+#include <array>
+#include <vector>
 #include "rbslib/Streams.h"
 #include <time.h>
 
@@ -28,6 +30,36 @@ public:
 	}
 };
 
+namespace
+{
+	asio::awaitable<void> ReadExact(asio::ip::tcp::socket& socket, void* data, std::size_t size)
+	{
+		co_await asio::async_read(socket, asio::buffer(data, size), asio::use_awaitable);
+	}
+
+	asio::awaitable<void> WriteAll(asio::ip::tcp::socket& socket, const void* data, std::size_t size)
+	{
+		co_await asio::async_write(socket, asio::buffer(data, size), asio::use_awaitable);
+	}
+
+	std::string Socks5ReplyToString(std::uint8_t rep)
+	{
+		switch (rep)
+		{
+		case 0x00: return "succeeded";
+		case 0x01: return "general SOCKS server failure";
+		case 0x02: return "connection not allowed by ruleset";
+		case 0x03: return "network unreachable";
+		case 0x04: return "host unreachable";
+		case 0x05: return "connection refused";
+		case 0x06: return "TTL expired";
+		case 0x07: return "command not supported";
+		case 0x08: return "address type not supported";
+		default:   return "unknown SOCKS5 error";
+		}
+	}
+}
+
 std::size_t Proxy::ConnectionControl::UploadBytes(void) const noexcept
 {
 	return this->upload_bytes;
@@ -43,13 +75,9 @@ auto Proxy::PingTest() const -> std::uint64_t
 	return asio::co_spawn(this->strand, [this]() -> asio::awaitable<std::uint64_t> {
 		try
 		{
-			// 解析主机名和端口
-			asio::ip::tcp::resolver resolver(co_await asio::this_coro::executor);
-			auto endpoints = co_await resolver.async_resolve(this->remote_server_addr, std::to_string(this->remote_server_port), asio::use_awaitable);
-
 			// 创建socket并连接
 			asio::ip::tcp::socket remote_server(co_await asio::this_coro::executor);
-			co_await asio::async_connect(remote_server, endpoints, asio::use_awaitable);
+			co_await this->ConnectRemoteServer(remote_server, this->remote_server_addr, this->remote_server_port, false);
 			remote_server.set_option(asio::ip::tcp::no_delay(true));
 
 			// 创建握手数据包
@@ -92,6 +120,196 @@ auto Proxy::PingTest() const -> std::uint64_t
 			throw ProxyException(std::string("Ping test failed: ") + e.what());
 		}
 	}, asio::use_future).get();
+}
+
+void Proxy::SetUpstreamSocks5(const std::string& host,
+	std::uint16_t port,
+	const std::string& username,
+	const std::string& password)
+{
+	this->upstream_socks5_enable = true;
+	this->upstream_socks5_host = host;
+	this->upstream_socks5_port = port;
+	this->upstream_socks5_username = username;
+	this->upstream_socks5_password = password;
+}
+
+void Proxy::DisableUpstreamSocks5()
+{
+	this->upstream_socks5_enable = false;
+	this->upstream_socks5_host.clear();
+	this->upstream_socks5_port = 0;
+	this->upstream_socks5_username.clear();
+	this->upstream_socks5_password.clear();
+}
+
+asio::awaitable<void> Proxy::ConnectViaSocks5(asio::ip::tcp::socket& remote_server,
+	const std::string& target_host,
+	std::uint16_t target_port)
+{
+	if (this->upstream_socks5_host.empty() || this->upstream_socks5_port == 0)
+	{
+		throw ProxyException("SOCKS5 is enabled but host/port is invalid");
+	}
+
+	asio::ip::tcp::resolver resolver(remote_server.get_executor());
+	auto proxy_endpoints = co_await resolver.async_resolve(
+		this->upstream_socks5_host,
+		std::to_string(this->upstream_socks5_port),
+		asio::use_awaitable
+	);
+
+	co_await asio::async_connect(remote_server, proxy_endpoints, asio::use_awaitable);
+
+	std::vector<std::uint8_t> greeting;
+	const bool need_auth = !this->upstream_socks5_username.empty() || !this->upstream_socks5_password.empty();
+	if (need_auth)
+	{
+		greeting = { 0x05, 0x02, 0x00, 0x02 };
+	}
+	else
+	{
+		greeting = { 0x05, 0x01, 0x00 };
+	}
+	co_await WriteAll(remote_server, greeting.data(), greeting.size());
+
+	std::array<std::uint8_t, 2> greeting_resp{};
+	co_await ReadExact(remote_server, greeting_resp.data(), greeting_resp.size());
+	if (greeting_resp[0] != 0x05)
+	{
+		throw ProxyException("Invalid SOCKS5 greeting response version");
+	}
+	if (greeting_resp[1] == 0xFF)
+	{
+		throw ProxyException("SOCKS5 server has no acceptable authentication method");
+	}
+
+	if (greeting_resp[1] == 0x02)
+	{
+		if (this->upstream_socks5_username.size() > 255 || this->upstream_socks5_password.size() > 255)
+		{
+			throw ProxyException("SOCKS5 username/password too long");
+		}
+		std::vector<std::uint8_t> auth;
+		auth.push_back(0x01);
+		auth.push_back(static_cast<std::uint8_t>(this->upstream_socks5_username.size()));
+		auth.insert(auth.end(), this->upstream_socks5_username.begin(), this->upstream_socks5_username.end());
+		auth.push_back(static_cast<std::uint8_t>(this->upstream_socks5_password.size()));
+		auth.insert(auth.end(), this->upstream_socks5_password.begin(), this->upstream_socks5_password.end());
+		co_await WriteAll(remote_server, auth.data(), auth.size());
+
+		std::array<std::uint8_t, 2> auth_resp{};
+		co_await ReadExact(remote_server, auth_resp.data(), auth_resp.size());
+		if (auth_resp[1] != 0x00)
+		{
+			throw ProxyException("SOCKS5 username/password authentication failed");
+		}
+	}
+	else if (greeting_resp[1] != 0x00)
+	{
+		throw ProxyException("Unsupported SOCKS5 authentication method selected by server");
+	}
+
+	std::vector<std::uint8_t> req;
+	req.push_back(0x05);
+	req.push_back(0x01);
+	req.push_back(0x00);
+
+	asio::error_code ec;
+	auto ip = asio::ip::make_address(target_host, ec);
+	if (!ec)
+	{
+		if (ip.is_v4())
+		{
+			req.push_back(0x01);
+			auto bytes = ip.to_v4().to_bytes();
+			req.insert(req.end(), bytes.begin(), bytes.end());
+		}
+		else
+		{
+			req.push_back(0x04);
+			auto bytes = ip.to_v6().to_bytes();
+			req.insert(req.end(), bytes.begin(), bytes.end());
+		}
+	}
+	else
+	{
+		if (target_host.size() > 255)
+		{
+			throw ProxyException("SOCKS5 target host too long");
+		}
+		req.push_back(0x03);
+		req.push_back(static_cast<std::uint8_t>(target_host.size()));
+		req.insert(req.end(), target_host.begin(), target_host.end());
+	}
+	req.push_back(static_cast<std::uint8_t>((target_port >> 8) & 0xFF));
+	req.push_back(static_cast<std::uint8_t>(target_port & 0xFF));
+	co_await WriteAll(remote_server, req.data(), req.size());
+
+	std::array<std::uint8_t, 4> resp_head{};
+	co_await ReadExact(remote_server, resp_head.data(), resp_head.size());
+	if (resp_head[0] != 0x05)
+	{
+		throw ProxyException("Invalid SOCKS5 connect response version");
+	}
+	if (resp_head[1] != 0x00)
+	{
+		throw ProxyException(std::string("SOCKS5 connect failed: ") + Socks5ReplyToString(resp_head[1]));
+	}
+
+	std::size_t addr_len = 0;
+	switch (resp_head[3])
+	{
+	case 0x01: addr_len = 4; break;
+	case 0x04: addr_len = 16; break;
+	case 0x03:
+	{
+		std::array<std::uint8_t, 1> domain_len{};
+		co_await ReadExact(remote_server, domain_len.data(), 1);
+		addr_len = domain_len[0];
+		break;
+	}
+	default:
+		throw ProxyException("Invalid SOCKS5 BND.ADDR type");
+	}
+
+	std::vector<std::uint8_t> tail(addr_len + 2);
+	if (!tail.empty())
+	{
+		co_await ReadExact(remote_server, tail.data(), tail.size());
+	}
+
+	co_return;
+}
+
+asio::awaitable<void> Proxy::ConnectRemoteServer(asio::ip::tcp::socket& remote_server,
+	const std::string& target_host,
+	std::uint16_t target_port,
+	bool log_success)
+{
+	if (this->upstream_socks5_enable)
+	{
+		co_await this->ConnectViaSocks5(remote_server, target_host, target_port);
+		if (log_success)
+		{
+			this->log_output(("Connected to remote server " + target_host + ":" +
+				std::to_string(target_port) + " via SOCKS5 " +
+				this->upstream_socks5_host + ":" + std::to_string(this->upstream_socks5_port)).c_str());
+		}
+		co_return;
+	}
+
+	asio::ip::tcp::resolver resolver(remote_server.get_executor());
+	auto endpoints = co_await resolver.async_resolve(
+		target_host,
+		std::to_string(target_port),
+		asio::use_awaitable
+	);
+	co_await asio::async_connect(remote_server, endpoints, asio::use_awaitable);
+	if (log_success)
+	{
+		this->log_output(("Connected to remote server " + target_host + ":" + std::to_string(target_port)).c_str());
+	}
 }
 
 static std::string convertDomainPattern(const std::string& pattern) {
@@ -360,13 +578,7 @@ asio::awaitable<void> Proxy::HandleConnection(asio::ip::tcp::socket socket)
 				asio::ip::tcp::socket remote_server(socket.get_executor());
 				try
 				{
-					// 解析主机名和端口
-					asio::ip::tcp::resolver resolver(socket.get_executor());
-					auto endpoints = co_await resolver.async_resolve(remote_server_addr_real, std::to_string(remote_server_port_real), asio::use_awaitable);
-
-					// 尝试连接每个解析到的端点
-					co_await asio::async_connect(remote_server, endpoints, asio::use_awaitable);
-					this->log_output(("Connected to remote server " + remote_server_addr_real + ":" + std::to_string(remote_server_port_real)).c_str());
+					co_await this->ConnectRemoteServer(remote_server, remote_server_addr_real, static_cast<std::uint16_t>(remote_server_port_real));
 				}
 				catch (const std::exception& e)
 				{

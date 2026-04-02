@@ -431,6 +431,11 @@ int main(int argc,const char**argv)
 		std::string remote_server_addr = Config::get_config<std::string>("Address");
 		std::uint16_t remote_server_port = Config::get_config<int>("RemotePort");
 		bool enable_input = Config::get_config<bool>("AllowInput");
+		bool upstream_socks5_enable = false;
+		std::string upstream_socks5_host;
+		std::uint16_t upstream_socks5_port = 0;
+		std::string upstream_socks5_username;
+		std::string upstream_socks5_password;
 		Logger::LogInfo("Initializing whitelist and ban list");
 		WhiteBlackList::Init();
 		if (WhiteBlackList::IsWhiteListOn()) {
@@ -438,7 +443,47 @@ int main(int argc,const char**argv)
 		}
 		Logger::LogInfo("Local address: %s port: %d", local_address.c_str(), local_port);
 		Logger::LogInfo("Remote server address: %s port: %d", remote_server_addr.c_str(), remote_server_port);
+
+		try
+		{
+			upstream_socks5_enable = Config::get_config<bool>("UpstreamSocks5Enable");
+		}
+		catch (const ConfigException&) {}
+		try
+		{
+			upstream_socks5_host = Config::get_config<std::string>("UpstreamSocks5Host");
+		}
+		catch (const ConfigException&) {}
+		try
+		{
+			upstream_socks5_port = static_cast<std::uint16_t>(Config::get_config<int>("UpstreamSocks5Port"));
+		}
+		catch (const ConfigException&) {}
+		try
+		{
+			upstream_socks5_username = Config::get_config<std::string>("UpstreamSocks5Username");
+		}
+		catch (const ConfigException&) {}
+		try
+		{
+			upstream_socks5_password = Config::get_config<std::string>("UpstreamSocks5Password");
+		}
+		catch (const ConfigException&) {}
+
 		proxy = std::make_shared<Proxy>(local_address, local_port, remote_server_addr, remote_server_port);
+		if (upstream_socks5_enable)
+		{
+			if (upstream_socks5_host.empty() || upstream_socks5_port == 0)
+			{
+				throw std::runtime_error("SOCKS5 is enabled but host/port is invalid");
+			}
+			proxy->SetUpstreamSocks5(upstream_socks5_host, upstream_socks5_port, upstream_socks5_username, upstream_socks5_password);
+			Logger::LogInfo("Upstream SOCKS5 enabled: %s:%d", upstream_socks5_host.c_str(), upstream_socks5_port);
+		}
+		else
+		{
+			Logger::LogInfo("Upstream SOCKS5 disabled");
+		}
 		/*
 		proxy->on_connected += [](const RbsLib::Network::TCP::TCPConnection& client) {
 			//std::cout <<client.GetAddress() <<"connected" << std::endl;

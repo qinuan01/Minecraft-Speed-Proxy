@@ -311,6 +311,13 @@ public:
   */
 	auto PingTest()const -> std::uint64_t;
 
+	void SetUpstreamSocks5(const std::string& host,
+		std::uint16_t port,
+		const std::string& username = "",
+		const std::string& password = "");
+
+	void DisableUpstreamSocks5();
+
 	/**
   * @brief 启用域名代理映射
   * @param doman_name 域名模板
@@ -345,11 +352,23 @@ protected:
 	asio::awaitable<void> AcceptLoop(asio::ip::tcp::acceptor& acceptor);
 	asio::awaitable<void> HandleConnection(asio::ip::tcp::socket socket);
 	asio::awaitable<void> ForwardData(asio::ip::tcp::socket& client_socket, asio::ip::tcp::socket& server_socket, User& user_control) noexcept;
+	asio::awaitable<void> ConnectRemoteServer(asio::ip::tcp::socket& remote_server,
+		const std::string& target_host,
+		std::uint16_t target_port,
+		bool log_success = true);
+	asio::awaitable<void> ConnectViaSocks5(asio::ip::tcp::socket& remote_server,
+		const std::string& target_host,
+		std::uint16_t target_port);
 
 	std::string local_address; ///< 本地监听地址
 	std::string remote_server_addr; ///< 远程服务器地址
 	std::uint16_t local_port; ///< 本地监听端口
 	std::uint16_t remote_server_port; ///< 远程服务器端口
+	bool upstream_socks5_enable = false; ///< 是否启用上游SOCKS5
+	std::string upstream_socks5_host; ///< 上游SOCKS5地址
+	std::uint16_t upstream_socks5_port = 0; ///< 上游SOCKS5端口
+	std::string upstream_socks5_username; ///< 上游SOCKS5用户名
+	std::string upstream_socks5_password; ///< 上游SOCKS5密码
 	std::atomic_uint32_t max_player = -1; ///< 最大在线人数
 	std::map<std::string, std::shared_ptr<User>> users; ///< 在线用户映射
 	asio::io_context io_context; ///< IO上下文

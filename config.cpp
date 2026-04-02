@@ -93,6 +93,11 @@ void Config::SetDefaultConfig()
 
 	Config::set_config("Address", "mc.hypixel.net");
 	Config::set_config("RemotePort", 25565);
+	Config::set_config("UpstreamSocks5Enable", false, true);
+	Config::set_config("UpstreamSocks5Host", "");
+	Config::set_config("UpstreamSocks5Port", 0);
+	Config::set_config("UpstreamSocks5Username", "");
+	Config::set_config("UpstreamSocks5Password", "");
 
 	//玩家限制相关
 	Config::set_config("MaxPlayer", -1);
