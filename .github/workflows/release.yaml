@@ -1,17 +1,31 @@
-name: Build and release
+name: Build and Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  ubuntu-build:
-    runs-on: ubuntu-22.04
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu
+            runner: ubuntu-22.04
+            artifact: minecraftspeedproxy-ubuntu-amd64.tar.gz
+
+          - os: debian
+            runner: ubuntu-latest
+            container: debian:12
+            artifact: minecraftspeedproxy-debian12-amd64.tar.gz
+
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
 
     steps:
       - name: Checkout
@@ -19,32 +33,38 @@ jobs:
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          apt-get update
+          apt-get install -y \
             build-essential \
             cmake \
             ninja-build \
+            pkg-config \
+            git \
+            ca-certificates \
             zlib1g-dev \
             libssl-dev
 
       - name: Configure CMake
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
-        run: cmake --build build --config Release -j$(nproc)
+        run: |
+          cmake --build build -j"$(nproc)"
 
-      - name: Prepare package
+      - name: Package
         run: |
           mkdir -p minecraftspeedproxy
           cp build/minecraftspeedproxy minecraftspeedproxy/
           cp LICENSE minecraftspeedproxy/
-          tar -czf minecraftspeedproxy-linux-amd64.tar.gz minecraftspeedproxy
+          tar -czf "${{ matrix.artifact }}" minecraftspeedproxy
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: minecraftspeedproxy-linux-amd64
-          path: minecraftspeedproxy-linux-amd64.tar.gz
+          name: ${{ matrix.os }}
+          path: ${{ matrix.artifact }}
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -52,7 +72,9 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          body: TODO New Release.
-          draft: false
-          prerelease: false
-          files: minecraftspeedproxy-linux-amd64.tar.gz
+          body: |
+            ## Downloads
+
+            - Ubuntu
+            - Debian 12
+          files: ${{ matrix.artifact }}
